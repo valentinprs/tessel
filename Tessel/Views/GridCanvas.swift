@@ -18,15 +18,26 @@ struct GridCanvas: View {
             ZStack(alignment: .topLeading) {
                 backgroundColor
 
-                ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
-                    if frames.indices.contains(index) {
-                        photoCell(photo, size: frames[index].size, isHighlighted: highlightedSlot == index)
-                            .offset(x: frames[index].minX, y: frames[index].minY)
+                // The first layout pass reports a zero size; drawing the cells
+                // then would make them grow out of the top-left corner.
+                if proxy.size.width > 0, proxy.size.height > 0 {
+                    ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
+                        if frames.indices.contains(index) {
+                            photoCell(photo, size: frames[index].size, isHighlighted: highlightedSlot == index)
+                                .offset(x: frames[index].minX, y: frames[index].minY)
+                        }
                     }
                 }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .clipped()
+            .transaction { transaction in
+                // Thumbnails appear inside animated screen and tab changes:
+                // their cells must snap into place instead of morphing.
+                if usesThumbnails {
+                    transaction.animation = nil
+                }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Grid preview")
@@ -68,13 +79,18 @@ private struct DividerSnap: Equatable {
     let percent: Int
 }
 
-/// The preview canvas: drag the gaps between photos to resize them, and tap
-/// two photos to swap them.
+/// The preview canvas: drag the gaps between photos to resize them, hold a
+/// photo then tap another to swap them, and tap anywhere else to zoom.
 struct EditableGridCanvas: View {
     @Binding var photos: [SelectedPhoto]
     @Binding var layout: GridLayout
     let spacing: CGFloat
     let margin: CGFloat
+    let background: Color
+    /// Called right before a resize, swap or reset changes the grid.
+    var onWillEdit: () -> Void = {}
+    /// Called on a plain tap, when no photo is waiting to be swapped.
+    var onTap: () -> Void = {}
 
     @State private var selectedSlot: Int?
     @State private var dragStartWeights: [CGFloat]?
@@ -99,9 +115,11 @@ struct EditableGridCanvas: View {
                     spacing: spacing,
                     margin: margin,
                     cornerRadius: 0,
-                    backgroundColor: .white,
+                    backgroundColor: background,
                     highlightedSlot: selectedSlot
                 )
+                .contentShape(Rectangle())
+                .onTapGesture(perform: tapOutsidePhotos)
 
                 ForEach(Array(geometry.frames.enumerated()), id: \.offset) { slot, frame in
                     Color.clear
@@ -109,9 +127,11 @@ struct EditableGridCanvas: View {
                         .frame(width: frame.width, height: frame.height)
                         .offset(x: frame.minX, y: frame.minY)
                         .onTapGesture { tapPhoto(at: slot) }
+                        .onLongPressGesture(minimumDuration: 1) { selectPhoto(at: slot) }
                         .accessibilityElement()
                         .accessibilityLabel("Photo \(slot + 1)")
-                        .accessibilityHint("Tap two photos to swap them.")
+                        .accessibilityHint("Touch and hold, then tap another photo to swap them.")
+                        .accessibilityAction(named: "Select to swap") { selectPhoto(at: slot) }
                         .accessibilityAddTraits(.isButton)
                 }
 
@@ -120,7 +140,9 @@ struct EditableGridCanvas: View {
                 }
             }
         }
-        .sensoryFeedback(.selection, trigger: selectedSlot)
+        .sensoryFeedback(trigger: selectedSlot) { _, newSlot in
+            newSlot != nil ? .impact(weight: .medium) : .selection
+        }
         .sensoryFeedback(.alignment, trigger: snap) { _, newSnap in newSnap != nil }
         .onChange(of: layout.id) { _, _ in selectedSlot = nil }
     }
@@ -161,6 +183,7 @@ struct EditableGridCanvas: View {
         .position(x: divider.rect.midX, y: divider.rect.midY)
         .gesture(resizeGesture(for: divider))
         .onTapGesture(count: 2) { resetProportions(of: divider) }
+        .onTapGesture(perform: tapOutsidePhotos)
         .animation(.snappy(duration: 0.18), value: isActive)
         .animation(.snappy(duration: 0.18), value: snap)
         .accessibilityElement()
@@ -174,6 +197,7 @@ struct EditableGridCanvas: View {
                 let node = layout.root.node(at: divider.path)
                 let start = dragStartWeights ?? node.weights
                 if dragStartWeights == nil {
+                    onWillEdit()
                     dragStartWeights = start
                     activeDividerID = divider.id
                     selectedSlot = nil
@@ -264,18 +288,34 @@ struct EditableGridCanvas: View {
 
     private func resetProportions(of divider: LayoutDivider) {
         let original = layout.template.node(at: divider.path).weights
+        onWillEdit()
         withAnimation(.snappy) {
             layout.root.setWeights(original, at: divider.path)
         }
     }
 
+    private func selectPhoto(at slot: Int) {
+        withAnimation(.snappy) {
+            selectedSlot = slot
+        }
+    }
+
+    private func tapOutsidePhotos() {
+        if selectedSlot != nil {
+            withAnimation(.snappy) { selectedSlot = nil }
+        } else {
+            onTap()
+        }
+    }
+
     private func tapPhoto(at slot: Int) {
         guard let selected = selectedSlot else {
-            selectedSlot = slot
+            onTap()
             return
         }
 
         if selected != slot, photos.indices.contains(selected), photos.indices.contains(slot) {
+            onWillEdit()
             withAnimation(.snappy) {
                 photos.swapAt(selected, slot)
             }

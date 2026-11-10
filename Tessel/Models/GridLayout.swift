@@ -153,13 +153,6 @@ struct GridLayout: Identifiable, Hashable {
             }
         }
 
-        var summary: String {
-            switch self {
-            case .rows: "Photos are arranged in rows that stretch across the full width."
-            case .columns: "Photos are arranged in columns that stretch across the full height."
-            case .featured: "The first photo takes the spotlight, the others sit alongside it."
-            }
-        }
     }
 
     let id: String
@@ -176,8 +169,6 @@ struct GridLayout: Identifiable, Hashable {
         self.template = root
         self.root = root
     }
-
-    var hasCustomProportions: Bool { root != template }
 
     static func == (lhs: GridLayout, rhs: GridLayout) -> Bool {
         lhs.id == rhs.id && lhs.root == rhs.root
