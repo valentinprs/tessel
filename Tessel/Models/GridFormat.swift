@@ -11,11 +11,11 @@ enum GridFormat: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .square: "Carré"
+        case .square: "Square"
         case .portrait: "Portrait"
-        case .landscape: "Paysage"
+        case .landscape: "Landscape"
         case .story: "Story"
-        case .classic: "Classique"
+        case .classic: "Classic"
         }
     }
 

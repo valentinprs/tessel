@@ -7,12 +7,25 @@ struct EditorView: View {
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var photos: [SelectedPhoto] = []
     @State private var format: GridFormat = .portrait
-    @State private var layout: GridLayoutOption = .balanced
+    @State private var layout: GridLayout = GridLayout.suggestions(for: 1)[0]
+    @State private var layoutFamily: GridLayout.Family = .rows
     @State private var spacing: Double = 4
     @State private var margin: Double = 0
-    @State private var areSpacingControlsVisible = false
+    @State private var background: GridBackground = .white
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var undoStack: [EditorSnapshot] = []
+    @State private var previewWidth: CGFloat = 0
+    /// The full-screen grid is shown while `isFullScreenShown`, and grows out
+    /// of the preview's frame (`previewFrame`) while `isFullScreenExpanded`.
+    @State private var isFullScreenShown = false
+    @State private var isFullScreenExpanded = false
+    @State private var previewFrame: CGRect = .zero
+    @State private var isExportPresented = false
+    @State private var isSaving = false
+    @State private var toast: String?
+    @State private var saveErrorMessage: String?
+    @AppStorage("exportResolution") private var exportResolution = ExportResolution.standard.rawValue
 
     var body: some View {
         NavigationStack {
@@ -26,7 +39,6 @@ struct EditorView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(EditorPalette.background.ignoresSafeArea())
-            .navigationTitle(step.title)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if step != .photos {
@@ -34,9 +46,32 @@ struct EditorView: View {
                         Button {
                             previousStep()
                         } label: {
-                            Image(systemName: "chevron.left")
+                            HugeiconImage(.arrowLeft, size: 22)
                         }
-                        .accessibilityLabel("Étape précédente")
+                        .accessibilityLabel("Previous step")
+                    }
+                }
+
+                if step == .preview {
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button(action: undo) {
+                            HugeiconImage(.undo, size: 22)
+                        }
+                        .disabled(undoStack.isEmpty)
+                        .accessibilityLabel("Undo")
+
+                        Button(action: saveToPhotos) {
+                            HugeiconImage(.download, size: 22)
+                        }
+                        .disabled(isSaving)
+                        .accessibilityLabel("Save to Photos")
+
+                        Button {
+                            isExportPresented = true
+                        } label: {
+                            HugeiconImage(.upload, size: 22)
+                        }
+                        .accessibilityLabel("Export")
                     }
                 }
             }
@@ -44,13 +79,13 @@ struct EditorView: View {
             .toolbarBackground(.visible, for: .navigationBar)
             .safeAreaInset(edge: .bottom) {
                 if step == .preview {
-                    editorToolbar
+                    spacingControls
                 } else {
                     nextButton
                 }
             }
             .alert(
-                "Impossible de charger les photos",
+                "Couldn’t load the photos",
                 isPresented: Binding(
                     get: { errorMessage != nil },
                     set: { if !$0 { errorMessage = nil } }
@@ -60,13 +95,99 @@ struct EditorView: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            .alert(
+                "Couldn’t save the grid",
+                isPresented: Binding(
+                    get: { saveErrorMessage != nil },
+                    set: { if !$0 { saveErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(saveErrorMessage ?? "")
+            }
+            .sheet(isPresented: $isExportPresented) {
+                ExportSheet(exporter: exporter)
+                    .presentationDragIndicator(.visible)
+            }
+            .toast($toast)
             .onChange(of: pickerItems) { _, newItems in
                 Task { await loadPhotos(from: newItems) }
             }
+            .onChange(of: layout.id) { _, _ in
+                undoStack.removeAll()
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if isFullScreenShown {
+                fullScreenGrid
+            }
+        }
+        .statusBarHidden(isFullScreenExpanded)
         .tint(EditorPalette.accent)
         .preferredColorScheme(.dark)
+    }
+
+    /// The finished grid, as large as the screen allows. It is the preview
+    /// grid itself that grows from its place on screen, drawn at the preview's
+    /// size then scaled, so the gap and gutter keep their look.
+    private var fullScreenGrid: some View {
+        GeometryReader { proxy in
+            let origin = proxy.frame(in: .global).origin
+            let start = previewFrame.offsetBy(dx: -origin.x, dy: -origin.y)
+            let previewSize = previewFrame.size
+            let fullScale = previewSize.width > 0
+                ? min(proxy.size.width / previewSize.width, proxy.size.height / previewSize.height)
+                : 1
+
+            ZStack {
+                Color.black
+                    .opacity(isFullScreenExpanded ? 1 : 0)
+
+                GridCanvas(
+                    photos: photos,
+                    layout: layout.root,
+                    spacing: spacing,
+                    margin: margin,
+                    cornerRadius: 0,
+                    backgroundColor: background.color
+                )
+                .frame(width: previewSize.width, height: previewSize.height)
+                .clipShape(RoundedRectangle(cornerRadius: isFullScreenExpanded ? 0 : 2, style: .continuous))
+                .scaleEffect(isFullScreenExpanded ? fullScale : 1)
+                .position(
+                    x: isFullScreenExpanded ? proxy.size.width / 2 : start.midX,
+                    y: isFullScreenExpanded ? proxy.size.height / 2 : start.midY
+                )
+            }
+        }
+        .ignoresSafeArea()
+        .contentShape(Rectangle())
+        .onTapGesture { setFullScreen(false) }
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("Grid, full screen")
+        .accessibilityHint("Tap to go back to editing.")
+    }
+
+    private func setFullScreen(_ isOn: Bool) {
+        let animation = Animation.spring(duration: 0.42, bounce: 0.12)
+        if isOn {
+            // Lay the copy over the preview first, then grow it in the next
+            // transaction so the animation starts from the preview's frame.
+            isFullScreenShown = true
+            DispatchQueue.main.async {
+                withAnimation(animation) {
+                    isFullScreenExpanded = true
+                }
+            }
+        } else {
+            withAnimation(animation) {
+                isFullScreenExpanded = false
+            } completion: {
+                isFullScreenShown = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -97,13 +218,13 @@ struct EditorView: View {
         }
         .animation(.snappy, value: step)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Étape \(step.rawValue + 1) sur \(FlowStep.allCases.count)")
+        .accessibilityLabel("Step \(step.rawValue + 1) of \(FlowStep.allCases.count)")
     }
 
     private var photoSelectionStep: some View {
         ScrollView {
             VStack(spacing: 20) {
-                Text("Choisis jusqu’à 9 photos dans l’ordre où tu veux les voir.")
+                Text("Pick up to 9 photos, in the order you want them to appear.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,11 +241,10 @@ struct EditorView: View {
                             ProgressView()
                                 .controlSize(.large)
                         } else {
-                            Image(systemName: photos.isEmpty ? "photo.on.rectangle.angled" : "photo.badge.plus")
-                                .font(.system(size: 36, weight: .medium))
+                            HugeiconImage(photos.isEmpty ? .album : .imageAdd, size: 40)
                         }
 
-                        Text(photos.isEmpty ? "Sélectionner des photos" : "Modifier la sélection")
+                        Text(photos.isEmpty ? "Select photos" : "Edit selection")
                             .font(.headline)
 
                         if !photos.isEmpty {
@@ -197,7 +317,7 @@ struct EditorView: View {
     private var ratioSelectionStep: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Choisis les proportions finales de la grille.")
+                Text("Choose the final proportions of the grid.")
                     .font(.body)
                     .foregroundStyle(.secondary)
 
@@ -266,53 +386,75 @@ struct EditorView: View {
     private var layoutSelectionStep: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Choisis comment les photos occupent l’espace.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                if photos.count > 1 {
+                    Picker("Layout type", selection: $layoutFamily.animation(.snappy)) {
+                        ForEach(GridLayout.Family.allCases) { family in
+                            Text(family.title).tag(family)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
 
                 LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12)
-                    ],
-                    spacing: 12
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
+                    spacing: 10
                 ) {
-                    ForEach(GridLayoutOption.available(for: photos.count)) { option in
+                    ForEach(GridLayout.suggestions(for: photos.count, family: layoutFamily)) { option in
                         Button {
                             withAnimation(.snappy) {
-                                layout = option
+                                if layout.id != option.id {
+                                    layout = option
+                                }
                             }
                         } label: {
-                            VStack(spacing: 12) {
-                                LayoutDiagram(
-                                    layout: option,
-                                    photoCount: photos.count,
-                                    isSelected: layout == option
-                                )
-                                .frame(height: 96)
-
-                                Text(option.title)
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(12)
-                            .foregroundStyle(.white)
-                            .background(EditorPalette.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(
-                                        layout == option ? EditorPalette.accent : .white.opacity(0.06),
-                                        lineWidth: 1.5
-                                    )
-                            }
+                            layoutCard(option)
                         }
                         .buttonStyle(PressableButtonStyle())
+                        .accessibilityLabel("\(option.family.title) \(option.title)")
+                        .accessibilityAddTraits(layout.id == option.id ? .isSelected : [])
                     }
                 }
+                // Swap the whole grid when the tab changes, rather than
+                // morphing cards of one family into another.
+                .id(layoutFamily)
+                .transition(.opacity)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
+        }
+        .sensoryFeedback(.selection, trigger: layout.id)
+    }
+
+    private func layoutCard(_ option: GridLayout) -> some View {
+        let isSelected = layout.id == option.id
+
+        return VStack(spacing: 8) {
+            GridCanvas(
+                photos: photos,
+                layout: option.root,
+                spacing: 2,
+                margin: 0,
+                cornerRadius: 1.5,
+                backgroundColor: .white.opacity(0.9),
+                usesThumbnails: true
+            )
+            .aspectRatio(format.aspectRatio, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityHidden(true)
+
+            Text(option.title)
+                .font(.caption.weight(.semibold).monospacedDigit())
+                .foregroundStyle(isSelected ? EditorPalette.accent : .white.opacity(0.78))
+        }
+        .frame(height: 132)
+        .padding(10)
+        .frame(maxWidth: .infinity)
+        .background(isSelected ? EditorPalette.accent.opacity(0.12) : EditorPalette.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isSelected ? EditorPalette.accent : .white.opacity(0.06), lineWidth: 1.5)
         }
     }
 
@@ -320,28 +462,44 @@ struct EditorView: View {
         GeometryReader { proxy in
             let mosaicSize = fittedMosaicSize(in: proxy.size)
 
-            GridCanvas(
-                photos: photos,
-                layout: layout,
+            EditableGridCanvas(
+                photos: $photos,
+                layout: $layout,
                 spacing: spacing,
                 margin: margin,
-                cornerRadius: 0,
-                backgroundColor: .white
+                background: background.color,
+                onWillEdit: recordUndo,
+                onTap: { setFullScreen(true) }
             )
             .frame(width: mosaicSize.width, height: mosaicSize.height)
+            .onAppear { previewWidth = mosaicSize.width }
+            .onChange(of: mosaicSize.width) { _, width in previewWidth = width }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                previewFrame = frame
+            }
+            // The full-screen copy stands in for the preview while it is shown.
+            .opacity(isFullScreenShown ? 0 : 1)
             .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .stroke(.white.opacity(0.12), lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
-            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2 - 14)
+
+            Text("Drag the dividers to resize · Hold a photo, then tap another to swap · Tap to view full screen")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+                .frame(width: proxy.size.width)
+                .position(x: proxy.size.width / 2, y: proxy.size.height - 14)
         }
     }
 
     private func fittedMosaicSize(in containerSize: CGSize) -> CGSize {
         let availableWidth = max(0, containerSize.width - 40)
-        let availableHeight = max(0, containerSize.height - 40)
+        let availableHeight = max(0, containerSize.height - 76)
         guard availableWidth > 0, availableHeight > 0 else { return .zero }
 
         let availableRatio = availableWidth / availableHeight
@@ -358,78 +516,86 @@ struct EditorView: View {
         )
     }
 
-    private var editorToolbar: some View {
-        VStack(spacing: 0) {
-            if areSpacingControlsVisible {
-                spacingControls
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
-            Rectangle()
-                .fill(EditorPalette.separator)
-                .frame(height: 1)
-
-            HStack {
-                Spacer()
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        areSpacingControlsVisible.toggle()
-                    }
-                } label: {
-                    VStack(spacing: 6) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 20, weight: .medium))
-                            .frame(height: 24)
-
-                        Text("Espacements")
-                            .font(.caption2.weight(.medium))
-                    }
-                    .foregroundStyle(
-                        areSpacingControlsVisible
-                            ? EditorPalette.accent
-                            : .white.opacity(0.78)
-                    )
-                    .frame(minWidth: 96, minHeight: 56)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableButtonStyle())
-                .accessibilityLabel("Espacement et marge")
-
-                Spacer()
-            }
-            .frame(height: 68)
-        }
-        .background(EditorPalette.toolbar)
-    }
-
     private var spacingControls: some View {
         VStack(spacing: 22) {
             editorSlider(
-                title: "Entre les photos",
+                title: "Gap",
                 value: $spacing,
-                minimumIcon: "rectangle.compress.vertical",
-                maximumIcon: "rectangle.expand.vertical"
+                minimumIcon: .arrowShrink,
+                maximumIcon: .arrowExpand
             )
 
             editorSlider(
-                title: "Marge extérieure",
+                title: "Gutter",
                 value: $margin,
-                minimumIcon: "square",
-                maximumIcon: "square.dashed"
+                minimumIcon: .square,
+                maximumIcon: .squareDashed
             )
+
+            backgroundPicker
         }
         .padding(.horizontal, 20)
         .padding(.top, 16)
-        .padding(.bottom, 18)
-        .background(EditorPalette.raisedSurface)
+        .padding(.bottom, 12)
+        .background(EditorPalette.toolbar)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(EditorPalette.separator)
+                .frame(height: 1)
+        }
+    }
+
+    private var backgroundPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Background")
+                    .font(.subheadline.weight(.medium))
+
+                Spacer()
+
+                Text(background.title)
+                    .font(.subheadline)
+                    .foregroundStyle(EditorPalette.accent)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(GridBackground.allCases) { option in
+                        Button {
+                            guard option != background else { return }
+                            recordUndo()
+                            withAnimation(.snappy) {
+                                background = option
+                            }
+                        } label: {
+                            Circle()
+                                .fill(option.color)
+                                .frame(width: 30, height: 30)
+                                .overlay { Circle().stroke(.white.opacity(0.18), lineWidth: 1) }
+                                .padding(3)
+                                .overlay {
+                                    Circle()
+                                        .stroke(EditorPalette.accent, lineWidth: 2)
+                                        .opacity(option == background ? 1 : 0)
+                                }
+                        }
+                        .buttonStyle(PressableButtonStyle())
+                        .accessibilityLabel(option.title)
+                        .accessibilityAddTraits(option == background ? .isSelected : [])
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollClipDisabled()
+        }
+        .sensoryFeedback(.selection, trigger: background)
     }
 
     private func editorSlider(
         title: String,
         value: Binding<Double>,
-        minimumIcon: String,
-        maximumIcon: String
+        minimumIcon: Hugeicon,
+        maximumIcon: Hugeicon
     ) -> some View {
         VStack(spacing: 10) {
             HStack {
@@ -445,15 +611,25 @@ struct EditorView: View {
             }
 
             HStack(spacing: 12) {
-                Image(systemName: minimumIcon)
-                    .font(.caption)
+                HugeiconImage(minimumIcon, size: 18)
                     .foregroundStyle(.secondary)
 
-                Slider(value: value, in: 0...32, step: 1)
-                    .tint(EditorPalette.accent)
+                Slider(
+                    value: value,
+                    in: 0...32,
+                    step: 1,
+                    onEditingChanged: { isEditing in
+                        if isEditing { recordUndo() }
+                    }
+                )
+                .tint(EditorPalette.accent)
+                .sensoryFeedback(trigger: value.wrappedValue) { _, newValue in
+                    newValue == 0 || newValue == 32
+                        ? .impact(weight: .medium)
+                        : .selection
+                }
 
-                Image(systemName: maximumIcon)
-                    .font(.caption)
+                HugeiconImage(maximumIcon, size: 18)
                     .foregroundStyle(.secondary)
             }
         }
@@ -472,7 +648,7 @@ struct EditorView: View {
                 HStack {
                     Text(step.buttonTitle)
                     Spacer()
-                    Image(systemName: "arrow.right")
+                    HugeiconImage(.arrowRight, size: 22)
                 }
                 .font(.headline)
                 .foregroundStyle(.white)
@@ -491,6 +667,56 @@ struct EditorView: View {
         .background(EditorPalette.toolbar)
     }
 
+    private var exporter: GridExporter {
+        GridExporter(
+            photos: photos,
+            layout: layout.root,
+            format: format,
+            spacing: spacing,
+            margin: margin,
+            background: background.color,
+            referenceWidth: previewWidth
+        )
+    }
+
+    private func recordUndo() {
+        undoStack.append(
+            EditorSnapshot(photos: photos, layout: layout, spacing: spacing, margin: margin, background: background)
+        )
+        if undoStack.count > 50 {
+            undoStack.removeFirst()
+        }
+    }
+
+    private func undo() {
+        guard let snapshot = undoStack.popLast() else { return }
+        withAnimation(.snappy) {
+            photos = snapshot.photos
+            layout = snapshot.layout
+            spacing = snapshot.spacing
+            margin = snapshot.margin
+            background = snapshot.background
+        }
+    }
+
+    private func saveToPhotos() {
+        let width = ExportResolution(rawValue: exportResolution)?.rawValue ?? ExportResolution.standard.rawValue
+        guard let image = exporter.render(width: width) else {
+            saveErrorMessage = ExportError.renderingFailed.localizedDescription
+            return
+        }
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                _ = try await PhotoLibrary.save(image)
+                toast = "Saved to Photos"
+            } catch {
+                saveErrorMessage = error.localizedDescription
+            }
+        }
+    }
+
     private func nextStep() {
         guard let next = FlowStep(rawValue: step.rawValue + 1) else { return }
         withAnimation(.snappy) {
@@ -501,9 +727,6 @@ struct EditorView: View {
     private func previousStep() {
         guard let previous = FlowStep(rawValue: step.rawValue - 1) else { return }
         withAnimation(.snappy) {
-            if step == .preview {
-                areSpacingControlsVisible = false
-            }
             step = previous
         }
     }
@@ -534,13 +757,25 @@ struct EditorView: View {
             }
         }
 
+        undoStack.removeAll()
         withAnimation(.snappy) {
             photos = loaded
-            if !GridLayoutOption.available(for: loaded.count).contains(layout) {
-                layout = .balanced
+            if layout.root.photoCount != loaded.count,
+               let firstLayout = GridLayout.suggestions(for: loaded.count).first {
+                layout = firstLayout
+                layoutFamily = firstLayout.family
             }
         }
     }
+}
+
+/// Everything the undo button can roll back on the preview screen.
+private struct EditorSnapshot {
+    let photos: [SelectedPhoto]
+    let layout: GridLayout
+    let spacing: Double
+    let margin: Double
+    let background: GridBackground
 }
 
 private enum FlowStep: Int, CaseIterable, Identifiable {
@@ -551,53 +786,58 @@ private enum FlowStep: Int, CaseIterable, Identifiable {
 
     var id: Self { self }
 
-    var title: String {
-        switch self {
-        case .photos: "Photos"
-        case .ratio: "Ratio"
-        case .layout: "Disposition"
-        case .preview: "Aperçu"
-        }
-    }
-
     var buttonTitle: String {
         switch self {
-        case .photos: "Choisir le ratio"
-        case .ratio: "Choisir la disposition"
-        case .layout: "Afficher la grille"
+        case .photos: "Choose ratio"
+        case .ratio: "Choose layout"
+        case .layout: "Show grid"
         case .preview: ""
         }
     }
 }
 
-private struct LayoutDiagram: View {
-    let layout: GridLayoutOption
-    let photoCount: Int
-    let isSelected: Bool
+/// Icons from the free Hugeicons set (stroke rounded), stored as template
+/// vector images in the asset catalog.
+enum Hugeicon: String {
+    case album = "hugeicons-album-02"
+    case imageAdd = "hugeicons-image-add-02"
+    case arrowLeft = "hugeicons-arrow-left-01"
+    case arrowRight = "hugeicons-arrow-right-02"
+    case undo = "hugeicons-undo-02"
+    case arrowShrink = "hugeicons-arrow-shrink-02"
+    case arrowExpand = "hugeicons-arrow-expand-02"
+    case square = "hugeicons-square"
+    case squareDashed = "hugeicons-square-dashed"
+    case upload = "hugeicons-upload-01"
+    case cancel = "hugeicons-cancel-01"
+    case instagram = "hugeicons-instagram"
+    case share = "hugeicons-share-08"
+    case folderExport = "hugeicons-folder-export"
+    case download = "hugeicons-download-01"
+    case settings = "hugeicons-settings-02"
+    case checkmark = "hugeicons-checkmark-circle-02"
+}
+
+struct HugeiconImage: View {
+    let icon: Hugeicon
+    let size: CGFloat
+
+    init(_ icon: Hugeicon, size: CGFloat) {
+        self.icon = icon
+        self.size = size
+    }
 
     var body: some View {
-        GeometryReader { proxy in
-            let count = min(max(photoCount, 1), 5)
-            let frames = layout.frames(count: count, in: proxy.size, spacing: 3)
-
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(frames.enumerated()), id: \.offset) { index, frame in
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(
-                            isSelected
-                                ? EditorPalette.accent.opacity(index == 0 ? 0.9 : 0.45)
-                                : Color.secondary.opacity(index == 0 ? 0.48 : 0.22)
-                        )
-                        .frame(width: frame.width, height: frame.height)
-                        .offset(x: frame.minX, y: frame.minY)
-                }
-            }
-        }
-        .accessibilityHidden(true)
+        Image(icon.rawValue)
+            .renderingMode(.template)
+            .resizable()
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
-private struct PressableButtonStyle: ButtonStyle {
+struct PressableButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
@@ -605,10 +845,9 @@ private struct PressableButtonStyle: ButtonStyle {
     }
 }
 
-private enum EditorPalette {
+enum EditorPalette {
     static let background = Color(red: 0.055, green: 0.059, blue: 0.067)
     static let surface = Color(red: 0.105, green: 0.113, blue: 0.125)
-    static let raisedSurface = Color(red: 0.125, green: 0.133, blue: 0.145)
     static let control = Color(red: 0.17, green: 0.18, blue: 0.20)
     static let toolbar = Color(red: 0.075, green: 0.08, blue: 0.09)
     static let separator = Color.white.opacity(0.1)
