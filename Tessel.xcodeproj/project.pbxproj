@@ -13,7 +13,7 @@
 		A10000000000000000000004 /* GridCanvas.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000004 /* GridCanvas.swift */; };
 		A10000000000000000000006 /* EditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000006 /* EditorView.swift */; };
 		A10000000000000000000007 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000007 /* Assets.xcassets */; };
-		A10000000000000000000008 /* GridLayoutOption.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* GridLayoutOption.swift */; };
+		A10000000000000000000008 /* GridLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000009 /* GridLayout.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -24,7 +24,7 @@
 		A20000000000000000000006 /* EditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditorView.swift; sourceTree = "<group>"; };
 		A20000000000000000000007 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A20000000000000000000008 /* Tessel.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tessel.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		A20000000000000000000009 /* GridLayoutOption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GridLayoutOption.swift; sourceTree = "<group>"; };
+		A20000000000000000000009 /* GridLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GridLayout.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -61,7 +61,7 @@
 			isa = PBXGroup;
 			children = (
 				A20000000000000000000002 /* GridFormat.swift */,
-				A20000000000000000000009 /* GridLayoutOption.swift */,
+				A20000000000000000000009 /* GridLayout.swift */,
 				A20000000000000000000003 /* SelectedPhoto.swift */,
 			);
 			path = Models;
@@ -129,10 +129,10 @@
 			};
 			buildConfigurationList = A90000000000000000000001 /* Build configuration list for PBXProject "Tessel" */;
 			compatibilityVersion = "Xcode 14.0";
-			developmentRegion = fr;
+			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
-				fr,
+				en,
 				Base,
 			);
 			mainGroup = A40000000000000000000001;
@@ -166,7 +166,7 @@
 				A10000000000000000000003 /* SelectedPhoto.swift in Sources */,
 				A10000000000000000000004 /* GridCanvas.swift in Sources */,
 				A10000000000000000000006 /* EditorView.swift in Sources */,
-				A10000000000000000000008 /* GridLayoutOption.swift in Sources */,
+				A10000000000000000000008 /* GridLayout.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

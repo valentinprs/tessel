@@ -7,10 +7,10 @@ struct EditorView: View {
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var photos: [SelectedPhoto] = []
     @State private var format: GridFormat = .portrait
-    @State private var layout: GridLayoutOption = .balanced
+    @State private var layout: GridLayout = GridLayout.suggestions(for: 1)[0]
+    @State private var layoutFamily: GridLayout.Family = .rows
     @State private var spacing: Double = 4
     @State private var margin: Double = 0
-    @State private var areSpacingControlsVisible = false
     @State private var isLoading = false
     @State private var errorMessage: String?
 
@@ -36,7 +36,20 @@ struct EditorView: View {
                         } label: {
                             Image(systemName: "chevron.left")
                         }
-                        .accessibilityLabel("Étape précédente")
+                        .accessibilityLabel("Previous step")
+                    }
+                }
+
+                if step == .preview, layout.hasCustomProportions {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            withAnimation(.snappy) {
+                                layout.root = layout.template
+                            }
+                        } label: {
+                            Image(systemName: "arrow.counterclockwise")
+                        }
+                        .accessibilityLabel("Reset proportions")
                     }
                 }
             }
@@ -44,13 +57,13 @@ struct EditorView: View {
             .toolbarBackground(.visible, for: .navigationBar)
             .safeAreaInset(edge: .bottom) {
                 if step == .preview {
-                    editorToolbar
+                    spacingControls
                 } else {
                     nextButton
                 }
             }
             .alert(
-                "Impossible de charger les photos",
+                "Couldn’t load the photos",
                 isPresented: Binding(
                     get: { errorMessage != nil },
                     set: { if !$0 { errorMessage = nil } }
@@ -97,13 +110,13 @@ struct EditorView: View {
         }
         .animation(.snappy, value: step)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Étape \(step.rawValue + 1) sur \(FlowStep.allCases.count)")
+        .accessibilityLabel("Step \(step.rawValue + 1) of \(FlowStep.allCases.count)")
     }
 
     private var photoSelectionStep: some View {
         ScrollView {
             VStack(spacing: 20) {
-                Text("Choisis jusqu’à 9 photos dans l’ordre où tu veux les voir.")
+                Text("Pick up to 9 photos, in the order you want them to appear.")
                     .font(.body)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -124,7 +137,7 @@ struct EditorView: View {
                                 .font(.system(size: 36, weight: .medium))
                         }
 
-                        Text(photos.isEmpty ? "Sélectionner des photos" : "Modifier la sélection")
+                        Text(photos.isEmpty ? "Select photos" : "Edit selection")
                             .font(.headline)
 
                         if !photos.isEmpty {
@@ -197,7 +210,7 @@ struct EditorView: View {
     private var ratioSelectionStep: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Choisis les proportions finales de la grille.")
+                Text("Choose the final proportions of the grid.")
                     .font(.body)
                     .foregroundStyle(.secondary)
 
@@ -266,53 +279,77 @@ struct EditorView: View {
     private var layoutSelectionStep: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text("Choisis comment les photos occupent l’espace.")
+                if photos.count > 1 {
+                    Picker("Layout type", selection: $layoutFamily.animation(.snappy)) {
+                        ForEach(GridLayout.Family.allCases) { family in
+                            Text(family.title).tag(family)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                Text(photos.count > 1 ? layoutFamily.summary : "A single photo fills the whole grid.")
                     .font(.body)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .id(layoutFamily)
 
                 LazyVGrid(
-                    columns: [
-                        GridItem(.flexible(), spacing: 12),
-                        GridItem(.flexible(), spacing: 12)
-                    ],
-                    spacing: 12
+                    columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3),
+                    spacing: 10
                 ) {
-                    ForEach(GridLayoutOption.available(for: photos.count)) { option in
+                    ForEach(GridLayout.suggestions(for: photos.count, family: layoutFamily)) { option in
                         Button {
                             withAnimation(.snappy) {
-                                layout = option
+                                if layout.id != option.id {
+                                    layout = option
+                                }
                             }
                         } label: {
-                            VStack(spacing: 12) {
-                                LayoutDiagram(
-                                    layout: option,
-                                    photoCount: photos.count,
-                                    isSelected: layout == option
-                                )
-                                .frame(height: 96)
-
-                                Text(option.title)
-                                    .font(.subheadline.weight(.semibold))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(12)
-                            .foregroundStyle(.white)
-                            .background(EditorPalette.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                    .stroke(
-                                        layout == option ? EditorPalette.accent : .white.opacity(0.06),
-                                        lineWidth: 1.5
-                                    )
-                            }
+                            layoutCard(option)
                         }
                         .buttonStyle(PressableButtonStyle())
+                        .accessibilityLabel("\(option.family.title) \(option.title)")
+                        .accessibilityAddTraits(layout.id == option.id ? .isSelected : [])
                     }
                 }
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 24)
+        }
+        .sensoryFeedback(.selection, trigger: layout.id)
+    }
+
+    private func layoutCard(_ option: GridLayout) -> some View {
+        let isSelected = layout.id == option.id
+
+        return VStack(spacing: 8) {
+            GridCanvas(
+                photos: photos,
+                layout: option.root,
+                spacing: 2,
+                margin: 0,
+                cornerRadius: 1.5,
+                backgroundColor: .white.opacity(0.9),
+                usesThumbnails: true
+            )
+            .aspectRatio(format.aspectRatio, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 3, style: .continuous))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityHidden(true)
+
+            Text(option.title)
+                .font(.caption.weight(.semibold).monospacedDigit())
+                .foregroundStyle(isSelected ? EditorPalette.accent : .white.opacity(0.78))
+        }
+        .frame(height: 132)
+        .padding(10)
+        .frame(maxWidth: .infinity)
+        .background(isSelected ? EditorPalette.accent.opacity(0.12) : EditorPalette.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isSelected ? EditorPalette.accent : .white.opacity(0.06), lineWidth: 1.5)
         }
     }
 
@@ -320,13 +357,11 @@ struct EditorView: View {
         GeometryReader { proxy in
             let mosaicSize = fittedMosaicSize(in: proxy.size)
 
-            GridCanvas(
-                photos: photos,
-                layout: layout,
+            EditableGridCanvas(
+                photos: $photos,
+                layout: $layout,
                 spacing: spacing,
-                margin: margin,
-                cornerRadius: 0,
-                backgroundColor: .white
+                margin: margin
             )
             .frame(width: mosaicSize.width, height: mosaicSize.height)
             .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
@@ -335,13 +370,21 @@ struct EditorView: View {
                     .stroke(.white.opacity(0.12), lineWidth: 1)
             }
             .shadow(color: .black.opacity(0.45), radius: 24, y: 10)
-            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2 - 14)
+
+            Text("Drag the dividers to resize · Tap two photos to swap them")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+                .frame(width: proxy.size.width)
+                .position(x: proxy.size.width / 2, y: proxy.size.height - 14)
         }
     }
 
     private func fittedMosaicSize(in containerSize: CGSize) -> CGSize {
         let availableWidth = max(0, containerSize.width - 40)
-        let availableHeight = max(0, containerSize.height - 40)
+        let availableHeight = max(0, containerSize.height - 76)
         guard availableWidth > 0, availableHeight > 0 else { return .zero }
 
         let availableRatio = availableWidth / availableHeight
@@ -358,62 +401,17 @@ struct EditorView: View {
         )
     }
 
-    private var editorToolbar: some View {
-        VStack(spacing: 0) {
-            if areSpacingControlsVisible {
-                spacingControls
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-
-            Rectangle()
-                .fill(EditorPalette.separator)
-                .frame(height: 1)
-
-            HStack {
-                Spacer()
-
-                Button {
-                    withAnimation(.easeInOut(duration: 0.22)) {
-                        areSpacingControlsVisible.toggle()
-                    }
-                } label: {
-                    VStack(spacing: 6) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 20, weight: .medium))
-                            .frame(height: 24)
-
-                        Text("Espacements")
-                            .font(.caption2.weight(.medium))
-                    }
-                    .foregroundStyle(
-                        areSpacingControlsVisible
-                            ? EditorPalette.accent
-                            : .white.opacity(0.78)
-                    )
-                    .frame(minWidth: 96, minHeight: 56)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(PressableButtonStyle())
-                .accessibilityLabel("Espacement et marge")
-
-                Spacer()
-            }
-            .frame(height: 68)
-        }
-        .background(EditorPalette.toolbar)
-    }
-
     private var spacingControls: some View {
         VStack(spacing: 22) {
             editorSlider(
-                title: "Entre les photos",
+                title: "Gap",
                 value: $spacing,
                 minimumIcon: "rectangle.compress.vertical",
                 maximumIcon: "rectangle.expand.vertical"
             )
 
             editorSlider(
-                title: "Marge extérieure",
+                title: "Gutter",
                 value: $margin,
                 minimumIcon: "square",
                 maximumIcon: "square.dashed"
@@ -421,8 +419,13 @@ struct EditorView: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 16)
-        .padding(.bottom, 18)
-        .background(EditorPalette.raisedSurface)
+        .padding(.bottom, 12)
+        .background(EditorPalette.toolbar)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(EditorPalette.separator)
+                .frame(height: 1)
+        }
     }
 
     private func editorSlider(
@@ -451,6 +454,11 @@ struct EditorView: View {
 
                 Slider(value: value, in: 0...32, step: 1)
                     .tint(EditorPalette.accent)
+                    .sensoryFeedback(trigger: value.wrappedValue) { _, newValue in
+                        newValue == 0 || newValue == 32
+                            ? .impact(weight: .medium)
+                            : .selection
+                    }
 
                 Image(systemName: maximumIcon)
                     .font(.caption)
@@ -501,9 +509,6 @@ struct EditorView: View {
     private func previousStep() {
         guard let previous = FlowStep(rawValue: step.rawValue - 1) else { return }
         withAnimation(.snappy) {
-            if step == .preview {
-                areSpacingControlsVisible = false
-            }
             step = previous
         }
     }
@@ -536,8 +541,10 @@ struct EditorView: View {
 
         withAnimation(.snappy) {
             photos = loaded
-            if !GridLayoutOption.available(for: loaded.count).contains(layout) {
-                layout = .balanced
+            if layout.root.photoCount != loaded.count,
+               let firstLayout = GridLayout.suggestions(for: loaded.count).first {
+                layout = firstLayout
+                layoutFamily = firstLayout.family
             }
         }
     }
@@ -555,45 +562,18 @@ private enum FlowStep: Int, CaseIterable, Identifiable {
         switch self {
         case .photos: "Photos"
         case .ratio: "Ratio"
-        case .layout: "Disposition"
-        case .preview: "Aperçu"
+        case .layout: "Layout"
+        case .preview: "Preview"
         }
     }
 
     var buttonTitle: String {
         switch self {
-        case .photos: "Choisir le ratio"
-        case .ratio: "Choisir la disposition"
-        case .layout: "Afficher la grille"
+        case .photos: "Choose ratio"
+        case .ratio: "Choose layout"
+        case .layout: "Show grid"
         case .preview: ""
         }
-    }
-}
-
-private struct LayoutDiagram: View {
-    let layout: GridLayoutOption
-    let photoCount: Int
-    let isSelected: Bool
-
-    var body: some View {
-        GeometryReader { proxy in
-            let count = min(max(photoCount, 1), 5)
-            let frames = layout.frames(count: count, in: proxy.size, spacing: 3)
-
-            ZStack(alignment: .topLeading) {
-                ForEach(Array(frames.enumerated()), id: \.offset) { index, frame in
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(
-                            isSelected
-                                ? EditorPalette.accent.opacity(index == 0 ? 0.9 : 0.45)
-                                : Color.secondary.opacity(index == 0 ? 0.48 : 0.22)
-                        )
-                        .frame(width: frame.width, height: frame.height)
-                        .offset(x: frame.minX, y: frame.minY)
-                }
-            }
-        }
-        .accessibilityHidden(true)
     }
 }
 
@@ -605,10 +585,9 @@ private struct PressableButtonStyle: ButtonStyle {
     }
 }
 
-private enum EditorPalette {
+enum EditorPalette {
     static let background = Color(red: 0.055, green: 0.059, blue: 0.067)
     static let surface = Color(red: 0.105, green: 0.113, blue: 0.125)
-    static let raisedSurface = Color(red: 0.125, green: 0.133, blue: 0.145)
     static let control = Color(red: 0.17, green: 0.18, blue: 0.20)
     static let toolbar = Color(red: 0.075, green: 0.08, blue: 0.09)
     static let separator = Color.white.opacity(0.1)
