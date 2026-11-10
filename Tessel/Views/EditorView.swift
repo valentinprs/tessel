@@ -16,7 +16,11 @@ struct EditorView: View {
     @State private var errorMessage: String?
     @State private var undoStack: [EditorSnapshot] = []
     @State private var previewWidth: CGFloat = 0
-    @State private var isFullScreen = false
+    /// The full-screen grid is shown while `isFullScreenShown`, and grows out
+    /// of the preview's frame (`previewFrame`) while `isFullScreenExpanded`.
+    @State private var isFullScreenShown = false
+    @State private var isFullScreenExpanded = false
+    @State private var previewFrame: CGRect = .zero
     @State private var isExportPresented = false
     @State private var isSaving = false
     @State private var toast: String?
@@ -116,38 +120,48 @@ struct EditorView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay {
-            if isFullScreen {
+            if isFullScreenShown {
                 fullScreenGrid
-                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
             }
         }
-        .statusBarHidden(isFullScreen)
+        .statusBarHidden(isFullScreenExpanded)
         .tint(EditorPalette.accent)
         .preferredColorScheme(.dark)
     }
 
-    /// The finished grid, as large as the screen allows. It is drawn at the
-    /// preview's size then scaled up, so the gap and gutter keep their look.
+    /// The finished grid, as large as the screen allows. It is the preview
+    /// grid itself that grows from its place on screen, drawn at the preview's
+    /// size then scaled, so the gap and gutter keep their look.
     private var fullScreenGrid: some View {
         GeometryReader { proxy in
-            let previewSize = CGSize(width: previewWidth, height: previewWidth / format.aspectRatio)
-            let scale = previewSize.width > 0
+            let origin = proxy.frame(in: .global).origin
+            let start = previewFrame.offsetBy(dx: -origin.x, dy: -origin.y)
+            let previewSize = previewFrame.size
+            let fullScale = previewSize.width > 0
                 ? min(proxy.size.width / previewSize.width, proxy.size.height / previewSize.height)
                 : 1
 
-            GridCanvas(
-                photos: photos,
-                layout: layout.root,
-                spacing: spacing,
-                margin: margin,
-                cornerRadius: 0,
-                backgroundColor: background.color
-            )
-            .frame(width: previewSize.width, height: previewSize.height)
-            .scaleEffect(scale)
-            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            ZStack {
+                Color.black
+                    .opacity(isFullScreenExpanded ? 1 : 0)
+
+                GridCanvas(
+                    photos: photos,
+                    layout: layout.root,
+                    spacing: spacing,
+                    margin: margin,
+                    cornerRadius: 0,
+                    backgroundColor: background.color
+                )
+                .frame(width: previewSize.width, height: previewSize.height)
+                .clipShape(RoundedRectangle(cornerRadius: isFullScreenExpanded ? 0 : 2, style: .continuous))
+                .scaleEffect(isFullScreenExpanded ? fullScale : 1)
+                .position(
+                    x: isFullScreenExpanded ? proxy.size.width / 2 : start.midX,
+                    y: isFullScreenExpanded ? proxy.size.height / 2 : start.midY
+                )
+            }
         }
-        .background(Color.black)
         .ignoresSafeArea()
         .contentShape(Rectangle())
         .onTapGesture { setFullScreen(false) }
@@ -157,8 +171,22 @@ struct EditorView: View {
     }
 
     private func setFullScreen(_ isOn: Bool) {
-        withAnimation(.snappy(duration: 0.3)) {
-            isFullScreen = isOn
+        let animation = Animation.spring(duration: 0.42, bounce: 0.12)
+        if isOn {
+            // Lay the copy over the preview first, then grow it in the next
+            // transaction so the animation starts from the preview's frame.
+            isFullScreenShown = true
+            DispatchQueue.main.async {
+                withAnimation(animation) {
+                    isFullScreenExpanded = true
+                }
+            }
+        } else {
+            withAnimation(animation) {
+                isFullScreenExpanded = false
+            } completion: {
+                isFullScreenShown = false
+            }
         }
     }
 
@@ -446,6 +474,11 @@ struct EditorView: View {
             .frame(width: mosaicSize.width, height: mosaicSize.height)
             .onAppear { previewWidth = mosaicSize.width }
             .onChange(of: mosaicSize.width) { _, width in previewWidth = width }
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frame in
+                previewFrame = frame
+            }
+            // The full-screen copy stands in for the preview while it is shown.
+            .opacity(isFullScreenShown ? 0 : 1)
             .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
