@@ -9,6 +9,9 @@ struct GridCanvas: View {
     let backgroundColor: Color
     var usesThumbnails = false
     var highlightedSlot: Int?
+    /// How each photo is framed, by photo id. Photos without one fill their
+    /// cell, centred.
+    var crops: [String: PhotoCrop] = [:]
 
     var body: some View {
         GeometryReader { proxy in
@@ -49,9 +52,15 @@ struct GridCanvas: View {
     }
 
     private func photoCell(_ photo: SelectedPhoto, size: CGSize, isHighlighted: Bool) -> some View {
-        Image(uiImage: usesThumbnails ? photo.thumbnail : photo.image)
+        let crop = crops[photo.id] ?? PhotoCrop()
+        let imageSize = photo.image.size
+        let fill = PhotoCrop.fillSize(of: imageSize, in: size, scale: crop.scale)
+        let shift = PhotoCrop.maximumShift(of: imageSize, in: size, scale: crop.scale)
+
+        return Image(uiImage: usesThumbnails ? photo.thumbnail : photo.image)
             .resizable()
-            .scaledToFill()
+            .frame(width: fill.width, height: fill.height)
+            .offset(x: crop.offset.x * shift.width, y: crop.offset.y * shift.height)
             .frame(width: size.width, height: size.height)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
@@ -79,11 +88,13 @@ private struct DividerSnap: Equatable {
     let percent: Int
 }
 
-/// The preview canvas: drag the gaps between photos to resize them, hold a
-/// photo then tap another to swap them, and tap anywhere else to zoom.
+/// The preview canvas: drag the gaps between photos to resize them, drag or
+/// pinch a photo to reframe it, hold a photo then tap another to swap them,
+/// and tap to view the grid full screen.
 struct EditableGridCanvas: View {
     @Binding var photos: [SelectedPhoto]
     @Binding var layout: GridLayout
+    @Binding var crops: [String: PhotoCrop]
     let spacing: CGFloat
     let margin: CGFloat
     let background: Color
@@ -93,6 +104,9 @@ struct EditableGridCanvas: View {
     var onTap: () -> Void = {}
 
     @State private var selectedSlot: Int?
+    /// How the photo being reframed was framed when the gesture began.
+    @State private var panStart: PhotoCrop?
+    @State private var zoomStart: PhotoCrop?
     @State private var dragStartWeights: [CGFloat]?
     @State private var activeDividerID: String?
     @State private var snap: DividerSnap?
@@ -116,7 +130,8 @@ struct EditableGridCanvas: View {
                     margin: margin,
                     cornerRadius: 0,
                     backgroundColor: background,
-                    highlightedSlot: selectedSlot
+                    highlightedSlot: selectedSlot,
+                    crops: crops
                 )
                 .contentShape(Rectangle())
                 .onTapGesture(perform: tapOutsidePhotos)
@@ -126,12 +141,20 @@ struct EditableGridCanvas: View {
                         .contentShape(Rectangle())
                         .frame(width: frame.width, height: frame.height)
                         .offset(x: frame.minX, y: frame.minY)
-                        .onTapGesture { tapPhoto(at: slot) }
-                        .onLongPressGesture(minimumDuration: 1) { selectPhoto(at: slot) }
+                        // The hold is tried first; a shorter press falls
+                        // through to the tap.
+                        .gesture(
+                            LongPressGesture(minimumDuration: 0.3)
+                                .onEnded { _ in selectPhoto(at: slot) }
+                                .exclusively(before: TapGesture().onEnded { tapPhoto(at: slot) })
+                        )
+                        .simultaneousGesture(panGesture(slot: slot, cell: frame.size))
+                        .simultaneousGesture(zoomGesture(slot: slot))
                         .accessibilityElement()
                         .accessibilityLabel("Photo \(slot + 1)")
                         .accessibilityHint("Touch and hold, then tap another photo to swap them.")
                         .accessibilityAction(named: "Select to swap") { selectPhoto(at: slot) }
+                        .accessibilityAction(named: "Reset framing") { resetCrop(at: slot) }
                         .accessibilityAddTraits(.isButton)
                 }
 
@@ -168,7 +191,7 @@ struct EditableGridCanvas: View {
             if isActive, let snap {
                 Text("\(snap.percent)%")
                     .font(.caption.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.black)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(EditorPalette.accent, in: Capsule())
@@ -292,6 +315,72 @@ struct EditableGridCanvas: View {
         withAnimation(.snappy) {
             layout.root.setWeights(original, at: divider.path)
         }
+    }
+
+    // MARK: Framing
+
+    /// Dragging a photo moves it inside its cell, never past its edges.
+    private func panGesture(slot: Int, cell: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 8)
+            .onChanged { value in
+                guard let id = photoID(at: slot) else { return }
+                let current = crops[id] ?? PhotoCrop()
+                let start = panStart ?? current
+                if panStart == nil {
+                    onWillEdit()
+                    panStart = start
+                    selectedSlot = nil
+                }
+
+                let shift = PhotoCrop.maximumShift(
+                    of: photos[slot].image.size,
+                    in: cell,
+                    scale: current.scale
+                )
+                var crop = current
+                crop.offset = CGPoint(
+                    x: shift.width > 0 ? clamped(start.offset.x + value.translation.width / shift.width) : 0,
+                    y: shift.height > 0 ? clamped(start.offset.y + value.translation.height / shift.height) : 0
+                )
+                crops[id] = crop
+            }
+            .onEnded { _ in panStart = nil }
+    }
+
+    /// Pinching a photo zooms it in, from filling its cell up to 5×.
+    private func zoomGesture(slot: Int) -> some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                guard let id = photoID(at: slot) else { return }
+                let current = crops[id] ?? PhotoCrop()
+                let start = zoomStart ?? current
+                if zoomStart == nil {
+                    onWillEdit()
+                    zoomStart = start
+                    selectedSlot = nil
+                }
+
+                var crop = current
+                crop.scale = min(max(start.scale * value.magnification, 1), PhotoCrop.maximumScale)
+                crops[id] = crop
+            }
+            .onEnded { _ in zoomStart = nil }
+    }
+
+    private func resetCrop(at slot: Int) {
+        guard let id = photoID(at: slot), crops[id] != nil else { return }
+        onWillEdit()
+        withAnimation(.snappy) {
+            crops[id] = nil
+        }
+    }
+
+    private func photoID(at slot: Int) -> String? {
+        photos.indices.contains(slot) ? photos[slot].id : nil
+    }
+
+    private func clamped(_ value: CGFloat) -> CGFloat {
+        min(max(value, -1), 1)
     }
 
     private func selectPhoto(at slot: Int) {

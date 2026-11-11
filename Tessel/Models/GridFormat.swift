@@ -1,6 +1,6 @@
 import CoreGraphics
 
-enum GridFormat: String, CaseIterable, Identifiable {
+enum GridFormat: String, CaseIterable, Identifiable, Codable {
     case square
     case portrait
     case landscape

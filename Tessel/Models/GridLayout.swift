@@ -4,8 +4,8 @@ import Foundation
 /// A layout is a tree: each split places its children side by side
 /// (horizontal) or stacked (vertical), sized by their weights. Leaves are
 /// photo slots; slot `n` receives the n-th selected photo.
-struct LayoutNode: Hashable {
-    enum Axis: Hashable {
+struct LayoutNode: Hashable, Codable {
+    enum Axis: Hashable, Codable {
         case horizontal
         case vertical
 
@@ -138,7 +138,7 @@ extension LayoutNode {
 }
 
 struct GridLayout: Identifiable, Hashable {
-    enum Family: String, CaseIterable, Identifiable {
+    enum Family: String, CaseIterable, Identifiable, Codable {
         case rows
         case columns
         case featured
@@ -163,10 +163,15 @@ struct GridLayout: Identifiable, Hashable {
     var root: LayoutNode
 
     init(id: String, family: Family, title: String, root: LayoutNode) {
+        self.init(id: id, family: family, title: title, template: root, root: root)
+    }
+
+    /// Restores a layout whose proportions were edited, e.g. from a saved frame.
+    init(id: String, family: Family, title: String, template: LayoutNode, root: LayoutNode) {
         self.id = id
         self.family = family
         self.title = title
-        self.template = root
+        self.template = template
         self.root = root
     }
 

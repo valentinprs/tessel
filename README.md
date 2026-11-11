@@ -20,5 +20,7 @@ système : l'app n'a pas besoin d'un accès global à la photothèque.
 - formats Instagram carré (1:1) et portrait (4:5) ;
 - permutation de deux photos par toucher ;
 - réglage de l'espacement, des coins et du fond ;
-- export en 1080 px et partage avec Instagram, Messages, AirDrop, etc.
+- export en 1080 px et partage avec Instagram, Messages, AirDrop, etc. ;
+- enregistrement automatique des cadres, listés en mosaïque sur l'accueil
+  pour les rouvrir et les modifier (appui long pour supprimer).
 

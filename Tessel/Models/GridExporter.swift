@@ -25,6 +25,7 @@ struct GridExporter {
     let spacing: CGFloat
     let margin: CGFloat
     let background: Color
+    var crops: [String: PhotoCrop] = [:]
     /// Width of the on-screen preview the gap and gutter were chosen on, so the
     /// exported image keeps exactly the same proportions.
     let referenceWidth: CGFloat
@@ -40,7 +41,8 @@ struct GridExporter {
                 spacing: spacing,
                 margin: margin,
                 cornerRadius: 0,
-                backgroundColor: background
+                backgroundColor: background,
+                crops: crops
             )
             .frame(width: size.width, height: size.height)
         )

@@ -10,14 +10,6 @@ enum GridBackground: String, CaseIterable, Identifiable {
     case graphite
     case charcoal
     case black
-    case blush
-    case coral
-    case terracotta
-    case mustard
-    case sage
-    case forest
-    case sky
-    case navy
 
     var id: Self { self }
 
@@ -35,14 +27,14 @@ enum GridBackground: String, CaseIterable, Identifiable {
         case .graphite: Color(red: 0.36, green: 0.37, blue: 0.39)
         case .charcoal: Color(red: 0.17, green: 0.17, blue: 0.18)
         case .black: Color(red: 0, green: 0, blue: 0)
-        case .blush: Color(red: 0.96, green: 0.82, blue: 0.82)
-        case .coral: Color(red: 0.95, green: 0.5, blue: 0.43)
-        case .terracotta: Color(red: 0.75, green: 0.4, blue: 0.29)
-        case .mustard: Color(red: 0.89, green: 0.69, blue: 0.24)
-        case .sage: Color(red: 0.66, green: 0.73, blue: 0.62)
-        case .forest: Color(red: 0.2, green: 0.36, blue: 0.27)
-        case .sky: Color(red: 0.62, green: 0.79, blue: 0.92)
-        case .navy: Color(red: 0.13, green: 0.2, blue: 0.36)
         }
+    }
+}
+
+extension GridBackground: Codable {
+    /// Frames saved with a color that no longer exists fall back to white.
+    init(from decoder: Decoder) throws {
+        let rawValue = try decoder.singleValueContainer().decode(String.self)
+        self = GridBackground(rawValue: rawValue) ?? .white
     }
 }
